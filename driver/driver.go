@@ -51,7 +51,7 @@ var (
 	pluginInfo = &base.PluginInfoResponse{
 		Type:              base.PluginTypeDriver,
 		PluginApiVersions: []string{drivers.ApiVersion010},
-		PluginVersion:     "0.1.1-dev",
+		PluginVersion:     "0.2.0-dev",
 		Name:              pluginName,
 	}
 
@@ -135,7 +135,7 @@ type TaskConfig struct {
 	Mem         uint64   `codec:"Mem"`
 	Firecracker string   `codec:"Firecracker"`
 	Log         string   `code:"Log"`
-	DisableHt   bool     `code:"DisableHt"`
+	DisableSmt  bool     `code:"DisableHt"`
 }
 
 // TaskState is the state which is encoded in the handle returned in

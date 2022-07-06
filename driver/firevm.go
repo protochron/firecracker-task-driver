@@ -83,7 +83,7 @@ func taskConfig2FirecrackerOpts(taskConfig TaskConfig, cfg *drivers.TaskConfig) 
 		opts.FcCPUCount = 1
 	}
 	opts.FcCPUTemplate = taskConfig.Cputype
-	opts.FcDisableHt = taskConfig.DisableHt
+	opts.FcDisableSmt = taskConfig.DisableSmt
 
 	if cfg.Resources.NomadResources.Memory.MemoryMB > 0 {
 		opts.FcMemSz = cfg.Resources.NomadResources.Memory.MemoryMB

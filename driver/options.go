@@ -69,7 +69,7 @@ type options struct {
 	FcLogFifo          string   `long:"vmm-log-fifo" description:"FIFO for firecracker logs"`
 	FcLogLevel         string   `long:"log-level" description:"vmm log level" default:"Debug"`
 	FcMetricsFifo      string   `long:"metrics-fifo" description:"FIFO for firecracker metrics"`
-	FcDisableHt        bool     `long:"disable-hyperthreading" short:"t" description:"Disable CPU Hyperthreading"`
+	FcDisableSmt       bool     `long:"disable-smt" short:"t" description:"Disable CPU Simultaneous Hyperthreading"`
 	FcCPUCount         int64    `long:"ncpus" short:"c" description:"Number of CPUs" default:"1"`
 	FcCPUTemplate      string   `long:"cpu-template" description:"Firecracker CPU Template (C3 or T2)"`
 	FcMemSz            int64    `long:"memory" short:"m" description:"VM memory, in MiB" default:"512"`
@@ -124,7 +124,7 @@ func (opts *options) getFirecrackerConfig(AllocId string) (firecracker.Config, e
 		socketPath = getSocketPath()
 	}
 
-	htEnabled := !opts.FcDisableHt
+	htEnabled := !opts.FcDisableSmt
 
 	return firecracker.Config{
 		SocketPath:        socketPath,
