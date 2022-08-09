@@ -68,7 +68,7 @@ var (
 		"Mem":         hclspec.NewAttr("Mem", "number", false),
 		"Firecracker": hclspec.NewAttr("Firecracker", "string", false),
 		"Log":         hclspec.NewAttr("Log", "string", false),
-		"DisableHt":   hclspec.NewAttr("DisableHt", "bool", false),
+		"DisableSMT":  hclspec.NewAttr("DisableSMT", "bool", false),
 		"Nic": hclspec.NewBlock("Nic", false, hclspec.NewObject(map[string]*hclspec.Spec{
 			"Ip":          hclspec.NewAttr("Ip", "string", true),
 			"Gateway":     hclspec.NewAttr("Gateway", "string", true),
@@ -135,7 +135,7 @@ type TaskConfig struct {
 	Mem         uint64   `codec:"Mem"`
 	Firecracker string   `codec:"Firecracker"`
 	Log         string   `code:"Log"`
-	DisableSmt  bool     `code:"DisableHt"`
+	DisableSmt  bool     `code:"DisableSMT"`
 }
 
 // TaskState is the state which is encoded in the handle returned in
