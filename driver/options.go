@@ -124,7 +124,7 @@ func (opts *options) getFirecrackerConfig(AllocId string) (firecracker.Config, e
 		socketPath = getSocketPath()
 	}
 
-	htEnabled := !opts.FcDisableSmt
+	htEnabled := opts.FcDisableSmt
 
 	return firecracker.Config{
 		SocketPath:        socketPath,

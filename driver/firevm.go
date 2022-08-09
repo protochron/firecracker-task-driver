@@ -124,8 +124,7 @@ func (d *Driver) initializeContainer(ctx context.Context, cfg *drivers.TaskConfi
 		logger.SetLevel(log.DebugLevel)
 	}
 
-	vmmCtx, vmmCancel := context.WithCancel(ctx)
-	defer vmmCancel()
+	vmmCtx := context.Background()
 
 	machineOpts := []firecracker.Opt{
 		firecracker.WithLogger(log.NewEntry(logger)),
@@ -193,7 +192,7 @@ func (d *Driver) initializeContainer(ctx context.Context, cfg *drivers.TaskConfi
 	var vnic string
 	if len(opts.FcNetworkName) > 0 {
 		ip = fcCfg.NetworkInterfaces[0].StaticConfiguration.IPConfiguration.IPAddr.String()
-		vnic = fcCfg.NetworkInterfaces[0].CNIConfiguration.IfName + "vm"
+		vnic = fcCfg.NetworkInterfaces[0].CNIConfiguration.IfName
 	} else {
 		ip = "No network chosen"
 		vnic = ip
