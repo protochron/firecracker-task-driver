@@ -24,12 +24,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/nomad/helper/escapingfs"
-	"golang.org/x/crypto/blake2b"
-
 	"github.com/hashicorp/cronexpr"
 	"github.com/hashicorp/go-msgpack/codec"
 	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-set"
 	"github.com/hashicorp/go-version"
 	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/command/agent/host"
@@ -37,12 +35,14 @@ import (
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/args"
 	"github.com/hashicorp/nomad/helper/constraints/semver"
+	"github.com/hashicorp/nomad/helper/escapingfs"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/lib/cpuset"
 	"github.com/hashicorp/nomad/lib/kheap"
 	psstructs "github.com/hashicorp/nomad/plugins/shared/structs"
 	"github.com/miekg/dns"
 	"github.com/mitchellh/copystructure"
+	"golang.org/x/crypto/blake2b"
 )
 
 var (
@@ -146,6 +146,9 @@ const (
 
 	// AllNamespacesSentinel is the value used as a namespace RPC value
 	// to indicate that endpoints must search in all namespaces
+	//
+	// Also defined in acl/acl.go to avoid circular dependencies. If modified
+	// it should be updated there as well.
 	AllNamespacesSentinel = "*"
 
 	// maxNamespaceDescriptionLength limits a namespace description length
@@ -207,7 +210,7 @@ type RPCInfo interface {
 	IsForwarded() bool
 	SetForwarded()
 	TimeToBlock() time.Duration
-	// TimeToBlock sets how long this request can block. The requested time may not be possible,
+	// SetTimeToBlock sets how long this request can block. The requested time may not be possible,
 	// so Callers should readback TimeToBlock. E.g. you cannot set time to block at all on WriteRequests
 	// and it cannot exceed MaxBlockingRPCQueryTime
 	SetTimeToBlock(t time.Duration)
@@ -822,10 +825,20 @@ type EvalUpdateRequest struct {
 	WriteRequest
 }
 
-// EvalDeleteRequest is used for deleting an evaluation.
-type EvalDeleteRequest struct {
+// EvalReapRequest is used for reaping evaluations and allocation. This struct
+// is used by the Eval.Reap RPC endpoint as a request argument, and also when
+// performing eval reap or deletes via Raft. This is because Eval.Reap and
+// Eval.Delete use the same Raft message when performing deletes so we do not
+// need more Raft message types.
+type EvalReapRequest struct {
 	Evals  []string
 	Allocs []string
+
+	// UserInitiated tracks whether this reap request is the result of an
+	// operator request. If this is true, the FSM needs to ensure the eval
+	// broker is paused as the request can include non-terminal allocations.
+	UserInitiated bool
+
 	WriteRequest
 }
 
@@ -913,6 +926,14 @@ type ApplyPlanResultsRequest struct {
 	// PreemptionEvals is a slice of follow up evals for jobs whose allocations
 	// have been preempted to place allocs in this plan
 	PreemptionEvals []*Evaluation
+
+	// IneligibleNodes are nodes the plan applier has repeatedly rejected
+	// placements for and should therefore be considered ineligible by workers
+	// to avoid retrying them repeatedly.
+	IneligibleNodes []string
+
+	// UpdatedAt represents server time of receiving request.
+	UpdatedAt int64
 }
 
 // AllocUpdateRequest is used to submit changes to allocations, either
@@ -1632,6 +1653,7 @@ const (
 	NodeEventSubsystemDriver    = "Driver"
 	NodeEventSubsystemHeartbeat = "Heartbeat"
 	NodeEventSubsystemCluster   = "Cluster"
+	NodeEventSubsystemScheduler = "Scheduler"
 	NodeEventSubsystemStorage   = "Storage"
 )
 
@@ -1725,7 +1747,7 @@ func ValidNodeStatus(status string) bool {
 
 const (
 	// NodeSchedulingEligible and Ineligible marks the node as eligible or not,
-	// respectively, for receiving allocations. This is orthoginal to the node
+	// respectively, for receiving allocations. This is orthogonal to the node
 	// status being ready.
 	NodeSchedulingEligible   = "eligible"
 	NodeSchedulingIneligible = "ineligible"
@@ -2892,13 +2914,23 @@ func (r *RequestedDevice) Validate() error {
 
 // NodeResources is used to define the resources available on a client node.
 type NodeResources struct {
-	Cpu          NodeCpuResources
-	Memory       NodeMemoryResources
-	Disk         NodeDiskResources
-	Networks     Networks
-	NodeNetworks []*NodeNetworkResource
-	Devices      []*NodeDeviceResource
+	Cpu     NodeCpuResources
+	Memory  NodeMemoryResources
+	Disk    NodeDiskResources
+	Devices []*NodeDeviceResource
 
+	// NodeNetworks was added in Nomad 0.12 to support multiple interfaces.
+	// It is the superset of host_networks, fingerprinted networks, and the
+	// node's default interface.
+	NodeNetworks []*NodeNetworkResource
+
+	// Networks is the node's bridge network and default interface. It is
+	// only used when scheduling jobs with a deprecated
+	// task.resources.network stanza.
+	Networks Networks
+
+	// MinDynamicPort and MaxDynamicPort represent the inclusive port range
+	// to select dynamic ports from across all networks.
 	MinDynamicPort int
 	MaxDynamicPort int
 }
@@ -2975,23 +3007,23 @@ func (n *NodeResources) Merge(o *NodeResources) {
 	}
 
 	if len(o.NodeNetworks) != 0 {
-		lookupNetwork := func(nets []*NodeNetworkResource, name string) (int, *NodeNetworkResource) {
-			for i, nw := range nets {
-				if nw.Device == name {
-					return i, nw
-				}
-			}
-			return 0, nil
-		}
-
 		for _, nw := range o.NodeNetworks {
-			if i, nnw := lookupNetwork(n.NodeNetworks, nw.Device); nnw != nil {
+			if i, nnw := lookupNetworkByDevice(n.NodeNetworks, nw.Device); nnw != nil {
 				n.NodeNetworks[i] = nw
 			} else {
 				n.NodeNetworks = append(n.NodeNetworks, nw)
 			}
 		}
 	}
+}
+
+func lookupNetworkByDevice(nets []*NodeNetworkResource, name string) (int, *NodeNetworkResource) {
+	for i, nw := range nets {
+		if nw.Device == name {
+			return i, nw
+		}
+	}
+	return 0, nil
 }
 
 func (n *NodeResources) Equals(o *NodeResources) bool {
@@ -3961,10 +3993,7 @@ func (a *AllocatedDeviceResource) Copy() *AllocatedDeviceResource {
 
 	// Copy the devices
 	na.DeviceIDs = make([]string, len(a.DeviceIDs))
-	for i, id := range a.DeviceIDs {
-		na.DeviceIDs[i] = id
-	}
-
+	copy(na.DeviceIDs, a.DeviceIDs)
 	return &na
 }
 
@@ -6488,6 +6517,7 @@ func (tg *TaskGroup) Validate(j *Job) error {
 			mErr.Errors = append(mErr.Errors, outer)
 		}
 	}
+
 	return mErr.ErrorOrNil()
 }
 
@@ -6589,40 +6619,68 @@ func (tg *TaskGroup) validateNetworks() error {
 // group service checks that refer to tasks only refer to tasks that exist.
 func (tg *TaskGroup) validateServices() error {
 	var mErr multierror.Error
-	knownTasks := make(map[string]struct{})
 
-	// Track the providers used for this task group. Currently, Nomad only
+	// Accumulate task names in this group
+	taskSet := set.New[string](len(tg.Tasks))
+
+	// each service in a group must be unique (i.e. used in MakeAllocServiceID)
+	type unique struct {
+		name string
+		task string
+		port string
+	}
+
+	// Accumulate service IDs in this group
+	idSet := set.New[unique](0)
+
+	// Accumulate IDs that are duplicates
+	idDuplicateSet := set.New[unique](0)
+
+	// Accumulate the providers used for this task group. Currently, Nomad only
 	// allows the use of a single service provider within a task group.
-	configuredProviders := make(map[string]struct{})
+	providerSet := set.New[string](1)
 
 	// Create a map of known tasks and their services so we can compare
 	// vs the group-level services and checks
 	for _, task := range tg.Tasks {
-		knownTasks[task.Name] = struct{}{}
-		if task.Services == nil {
+		taskSet.Insert(task.Name)
+
+		if len(task.Services) == 0 {
 			continue
 		}
+
 		for _, service := range task.Services {
+
+			// Ensure no task-level checks specify a task
 			for _, check := range service.Checks {
 				if check.TaskName != "" {
 					mErr.Errors = append(mErr.Errors, fmt.Errorf("Check %s is invalid: only task group service checks can be assigned tasks", check.Name))
 				}
 			}
 
-			// Add the service provider to the tracking, if it has not already
-			// been seen.
-			if _, ok := configuredProviders[service.Provider]; !ok {
-				configuredProviders[service.Provider] = struct{}{}
+			// Track that we have seen this service id
+			id := unique{service.Name, task.Name, service.PortLabel}
+			if !idSet.Insert(id) {
+				// accumulate duplicates for a single error later on
+				idDuplicateSet.Insert(id)
 			}
+
+			// Track that we have seen this service provider
+			providerSet.Insert(service.Provider)
 		}
 	}
+
 	for i, service := range tg.Services {
 
-		// Add the service provider to the tracking, if it has not already been
-		// seen.
-		if _, ok := configuredProviders[service.Provider]; !ok {
-			configuredProviders[service.Provider] = struct{}{}
+		// Track that we have seen this service id
+		id := unique{service.Name, "group", service.PortLabel}
+		if !idSet.Insert(id) {
+			// accumulate duplicates for a single error later on
+			idDuplicateSet.Insert(id)
 		}
+
+		// Track that we have seen this service provider
+		providerSet.Insert(service.Provider)
 
 		if err := service.Validate(); err != nil {
 			outer := fmt.Errorf("Service[%d] %s validation failed: %s", i, service.Name, err)
@@ -6645,7 +6703,7 @@ func (tg *TaskGroup) validateServices() error {
 				if check.AddressMode == AddressModeDriver {
 					mErr.Errors = append(mErr.Errors, fmt.Errorf("Check %q invalid: cannot use address_mode=\"driver\", only checks defined in a \"task\" service block can use this mode", service.Name))
 				}
-				if _, ok := knownTasks[check.TaskName]; !ok {
+				if !taskSet.Contains(check.TaskName) {
 					mErr.Errors = append(mErr.Errors,
 						fmt.Errorf("Check %s invalid: refers to non-existent task %s", check.Name, check.TaskName))
 				}
@@ -6653,10 +6711,29 @@ func (tg *TaskGroup) validateServices() error {
 		}
 	}
 
+	// Produce an error of any services which are not unique enough in the group
+	// i.e. have same <task, name, port>
+	if idDuplicateSet.Size() > 0 {
+		mErr.Errors = append(mErr.Errors,
+			fmt.Errorf(
+				"Services are not unique: %s",
+				idDuplicateSet.String(
+					func(u unique) string {
+						s := u.task + "->" + u.name
+						if u.port != "" {
+							s += ":" + u.port
+						}
+						return s
+					},
+				),
+			),
+		)
+	}
+
 	// The initial feature release of native service discovery only allows for
 	// a single service provider to be used across all services in a task
 	// group.
-	if len(configuredProviders) > 1 {
+	if providerSet.Size() > 1 {
 		mErr.Errors = append(mErr.Errors,
 			errors.New("Multiple service providers used: task group services must use the same provider"))
 	}
@@ -6969,7 +7046,7 @@ type Task struct {
 	// task exits, other tasks will be gracefully terminated.
 	Leader bool
 
-	// ShutdownDelay is the duration of the delay between deregistering a
+	// ShutdownDelay is the duration of the delay between de-registering a
 	// task from Consul and sending it a signal to shutdown. See #2441
 	ShutdownDelay time.Duration
 
@@ -7610,6 +7687,9 @@ type Template struct {
 
 	// Perms is the permission the file should be written out with.
 	Perms string
+	// User and group that should own the file.
+	Uid int
+	Gid int
 
 	// LeftDelim and RightDelim are optional configurations to control what
 	// delimiter is utilized when parsing the template.
@@ -8372,9 +8452,14 @@ func (e *TaskEvent) SetValidationError(err error) *TaskEvent {
 	return e
 }
 
-func (e *TaskEvent) SetKillTimeout(timeout time.Duration) *TaskEvent {
-	e.KillTimeout = timeout
-	e.Details["kill_timeout"] = timeout.String()
+func (e *TaskEvent) SetKillTimeout(timeout, maxTimeout time.Duration) *TaskEvent {
+	lower := timeout
+	if maxTimeout < lower {
+		lower = maxTimeout
+	}
+
+	e.KillTimeout = lower
+	e.Details["kill_timeout"] = lower.String()
 	return e
 }
 
@@ -10890,6 +10975,14 @@ func (e *Evaluation) GetID() string {
 	return e.ID
 }
 
+// GetNamespace implements the NamespaceGetter interface, required for pagination.
+func (e *Evaluation) GetNamespace() string {
+	if e == nil {
+		return ""
+	}
+	return e.Namespace
+}
+
 // GetCreateIndex implements the CreateIndexGetter interface, required for
 // pagination.
 func (e *Evaluation) GetCreateIndex() uint64 {
@@ -11148,8 +11241,8 @@ type Plan struct {
 	// of the plan by only including it once.
 	Job *Job
 
-	// NodeUpdate contains all the allocations for each node. For each node,
-	// this is a list of the allocations to update to either stop or evict.
+	// NodeUpdate contains all the allocations to be stopped or evicted for
+	// each node.
 	NodeUpdate map[string][]*Allocation
 
 	// NodeAllocation contains all the allocations for each node.
@@ -11376,7 +11469,7 @@ func (p *Plan) NormalizeAllocations() {
 
 // PlanResult is the result of a plan submitted to the leader.
 type PlanResult struct {
-	// NodeUpdate contains all the updates that were committed.
+	// NodeUpdate contains all the evictions and stops that were committed.
 	NodeUpdate map[string][]*Allocation
 
 	// NodeAllocation contains all the allocations that were committed.
@@ -11393,6 +11486,16 @@ type PlanResult struct {
 	// as stopped.
 	NodePreemptions map[string][]*Allocation
 
+	// RejectedNodes are nodes the scheduler worker has rejected placements for
+	// and should be considered for ineligibility by the plan applier to avoid
+	// retrying them repeatedly.
+	RejectedNodes []string
+
+	// IneligibleNodes are nodes the plan applier has repeatedly rejected
+	// placements for and should therefore be considered ineligible by workers
+	// to avoid retrying them repeatedly.
+	IneligibleNodes []string
+
 	// RefreshIndex is the index the worker should refresh state up to.
 	// This allows all evictions and allocations to be materialized.
 	// If any allocations were rejected due to stale data (node state,
@@ -11406,8 +11509,9 @@ type PlanResult struct {
 
 // IsNoOp checks if this plan result would do nothing
 func (p *PlanResult) IsNoOp() bool {
-	return len(p.NodeUpdate) == 0 && len(p.NodeAllocation) == 0 &&
-		len(p.DeploymentUpdates) == 0 && p.Deployment == nil
+	return len(p.IneligibleNodes) == 0 && len(p.NodeUpdate) == 0 &&
+		len(p.NodeAllocation) == 0 && len(p.DeploymentUpdates) == 0 &&
+		p.Deployment == nil
 }
 
 // FullCommit is used to check if all the allocations in a plan
@@ -11912,8 +12016,9 @@ type ACLTokenDeleteRequest struct {
 
 // ACLTokenBootstrapRequest is used to bootstrap ACLs
 type ACLTokenBootstrapRequest struct {
-	Token      *ACLToken // Not client specifiable
-	ResetIndex uint64    // Reset index is used to clear the bootstrap token
+	Token           *ACLToken // Not client specifiable
+	ResetIndex      uint64    // Reset index is used to clear the bootstrap token
+	BootstrapSecret string
 	WriteRequest
 }
 
@@ -11972,6 +12077,7 @@ type OneTimeTokenDeleteRequest struct {
 
 // OneTimeTokenExpireRequest is a request to delete all expired one-time tokens
 type OneTimeTokenExpireRequest struct {
+	Timestamp time.Time
 	WriteRequest
 }
 
