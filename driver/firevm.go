@@ -124,7 +124,7 @@ func (d *Driver) initializeContainer(ctx context.Context, cfg *drivers.TaskConfi
 		logger.SetLevel(log.DebugLevel)
 	}
 
-	vmmCtx := context.Background()
+	vmmCtx, _ := context.WithCancel(ctx)
 
 	machineOpts := []firecracker.Opt{
 		firecracker.WithLogger(log.NewEntry(logger)),
