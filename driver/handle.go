@@ -142,12 +142,14 @@ func (h *taskHandle) stats(ctx context.Context, statsChannel chan *drivers.TaskR
 		pid, err := strconv.Atoi(h.Info.Pid)
 		if err != nil {
 			h.logger.Error("unable to convert pid ", h.Info.Pid, " to int from ", h.taskConfig.ID)
+			h.stateLock.Unlock()
 			continue
 		}
 
 		p, err := process.NewProcess(int32(pid))
 		if err != nil {
 			h.logger.Error("unable create new process ", h.Info.Pid, " from ", h.taskConfig.ID)
+			h.stateLock.Unlock()
 			continue
 		}
 		ms := &drivers.MemoryStats{}
