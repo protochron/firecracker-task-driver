@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/containerd/console v1.0.3
-	github.com/firecracker-microvm/firecracker-go-sdk v0.22.1-0.20220624152145-6032e14abbe5
+	github.com/firecracker-microvm/firecracker-go-sdk v0.22.1-0.20220802204953-b6809bbff730
 	github.com/hashicorp/go-hclog v1.2.1
 	github.com/hashicorp/nomad v1.3.3
 	github.com/pkg/errors v0.9.1
@@ -36,7 +36,7 @@ require (
 	github.com/go-openapi/spec v0.20.4 // indirect
 	github.com/go-openapi/strfmt v0.21.2 // indirect
 	github.com/go-openapi/swag v0.21.1 // indirect
-	github.com/go-openapi/validate v0.21.0 // indirect
+	github.com/go-openapi/validate v0.22.0 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
