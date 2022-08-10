@@ -91,6 +91,10 @@ func taskConfig2FirecrackerOpts(taskConfig TaskConfig, cfg *drivers.TaskConfig) 
 		opts.FcMemSz = 300
 	}
 	opts.FcBinary = taskConfig.Firecracker
+	opts.JailerBinary = taskConfig.JailerBinary
+	opts.Id = cfg.AllocID
+	opts.ExecFile = opts.FcBinary
+	opts.ChrootBaseDir = filepath.Join(cfg.AllocDir, cfg.Name)
 
 	return opts, nil
 }
@@ -161,15 +165,19 @@ func (d *Driver) initializeContainer(ctx context.Context, cfg *drivers.TaskConfi
 		return nil, fmt.Errorf("Could not create serial console  %v+", err)
 	}
 
-	cmd := firecracker.VMCommandBuilder{}.
-		WithBin(firecrackerBinary).
-		WithSocketPath(fcCfg.SocketPath).
-		WithStdin(tty).
-		WithStdout(tty).
-		WithStderr(nil).
-		Build(ctx)
+	fcCfg.JailerCfg.ExecFile = firecrackerBinary
 
-	machineOpts = append(machineOpts, firecracker.WithProcessRunner(cmd))
+	if fcCfg.JailerCfg == nil {
+		cmd := firecracker.VMCommandBuilder{}.
+			WithBin(firecrackerBinary).
+			WithSocketPath(fcCfg.SocketPath).
+			WithStdin(tty).
+			WithStdout(tty).
+			WithStderr(nil).
+			Build(ctx)
+
+		machineOpts = append(machineOpts, firecracker.WithProcessRunner(cmd))
+	}
 
 	m, err := firecracker.NewMachine(vmmCtx, fcCfg, machineOpts...)
 	if err != nil {

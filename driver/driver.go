@@ -58,17 +58,18 @@ var (
 	// taskConfigSpec is the hcl specification for the driver config section of
 	// a task within a job. It is returned in the TaskConfigSchema RPC
 	taskConfigSpec = hclspec.NewObject(map[string]*hclspec.Spec{
-		"KernelImage": hclspec.NewAttr("KernelImage", "string", false),
-		"BootOptions": hclspec.NewAttr("BootOptions", "string", false),
-		"BootDisk":    hclspec.NewAttr("BootDisk", "string", false),
-		"Disks":       hclspec.NewAttr("Disks", "list(string)", false),
-		"Network":     hclspec.NewAttr("Network", "string", false),
-		"Vcpus":       hclspec.NewAttr("Vcpus", "number", false),
-		"Cputype":     hclspec.NewAttr("Cputype", "string", false),
-		"Mem":         hclspec.NewAttr("Mem", "number", false),
-		"Firecracker": hclspec.NewAttr("Firecracker", "string", false),
-		"Log":         hclspec.NewAttr("Log", "string", false),
-		"DisableSMT":  hclspec.NewAttr("DisableSMT", "bool", false),
+		"KernelImage":  hclspec.NewAttr("KernelImage", "string", false),
+		"BootOptions":  hclspec.NewAttr("BootOptions", "string", false),
+		"BootDisk":     hclspec.NewAttr("BootDisk", "string", false),
+		"Disks":        hclspec.NewAttr("Disks", "list(string)", false),
+		"Network":      hclspec.NewAttr("Network", "string", false),
+		"Vcpus":        hclspec.NewAttr("Vcpus", "number", false),
+		"Cputype":      hclspec.NewAttr("Cputype", "string", false),
+		"Mem":          hclspec.NewAttr("Mem", "number", false),
+		"Firecracker":  hclspec.NewAttr("Firecracker", "string", false),
+		"JailerBinary": hclspec.NewAttr("JailerBinary", "string", false),
+		"Log":          hclspec.NewAttr("Log", "string", false),
+		"DisableSMT":   hclspec.NewAttr("DisableSMT", "bool", false),
 		"Nic": hclspec.NewBlock("Nic", false, hclspec.NewObject(map[string]*hclspec.Spec{
 			"Ip":          hclspec.NewAttr("Ip", "string", true),
 			"Gateway":     hclspec.NewAttr("Gateway", "string", true),
@@ -124,18 +125,19 @@ type Nic struct {
 
 // TaskConfig is the driver configuration of a task within a job
 type TaskConfig struct {
-	KernelImage string   `codec:"KernelImage"`
-	BootOptions string   `codec:"BootOptions"`
-	BootDisk    string   `codec:"BootDisk"`
-	Disks       []string `codec:"Disks"`
-	Network     string   `codec:"Network"`
-	Nic         Nic      `codec:"Nic"`
-	Vcpus       uint64   `codec:"Vcpus"`
-	Cputype     string   `codec:"Cputype"`
-	Mem         uint64   `codec:"Mem"`
-	Firecracker string   `codec:"Firecracker"`
-	Log         string   `code:"Log"`
-	DisableSmt  bool     `code:"DisableSMT"`
+	KernelImage  string   `codec:"KernelImage"`
+	BootOptions  string   `codec:"BootOptions"`
+	BootDisk     string   `codec:"BootDisk"`
+	Disks        []string `codec:"Disks"`
+	Network      string   `codec:"Network"`
+	Nic          Nic      `codec:"Nic"`
+	Vcpus        uint64   `codec:"Vcpus"`
+	Cputype      string   `codec:"Cputype"`
+	Mem          uint64   `codec:"Mem"`
+	Firecracker  string   `codec:"Firecracker"`
+	Log          string   `code:"Log"`
+	DisableSmt   bool     `code:"DisableSMT"`
+	JailerBinary string   `codec:"JailerBinary"`
 }
 
 // TaskState is the state which is encoded in the handle returned in
@@ -205,6 +207,7 @@ func (d *Driver) Fingerprint(ctx context.Context) (<-chan *drivers.Fingerprint, 
 
 func (d *Driver) handleFingerprint(ctx context.Context, ch chan<- *drivers.Fingerprint) {
 	defer close(ch)
+
 	ticker := time.NewTimer(0)
 	for {
 		select {
@@ -277,7 +280,6 @@ func (d *Driver) RecoverTask(handle *drivers.TaskHandle) error {
 }
 
 func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drivers.DriverNetwork, error) {
-
 	if _, ok := d.tasks.Get(cfg.ID); ok {
 		return nil, nil, fmt.Errorf("task with ID %q already started", cfg.ID)
 	}
@@ -388,6 +390,14 @@ func (d *Driver) DestroyTask(taskID string, force bool) error {
 		// grace period is chosen arbitrary here
 		if err := handle.shutdown(1 * time.Minute); err != nil {
 			handle.logger.Error("failed to destroy executor", "err", err)
+		}
+
+		// Wait for stats handler to report that the task has exited
+		for i := 0; i < 10; i++ {
+			if !handle.IsRunning() {
+				break
+			}
+			time.Sleep(time.Millisecond * 250)
 		}
 	}
 

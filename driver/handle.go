@@ -148,7 +148,7 @@ func (h *taskHandle) stats(ctx context.Context, statsChannel chan *drivers.TaskR
 
 		p, err := process.NewProcess(int32(pid))
 		if err != nil {
-			h.logger.Error("unable create new process ", h.Info.Pid, " from ", h.taskConfig.ID)
+			h.logger.Error("unable read process", h.Info.Pid, " from ", h.taskConfig.ID)
 			h.stateLock.Unlock()
 			continue
 		}
@@ -194,7 +194,6 @@ func keysToVal(line string) (string, uint64, error) {
 }
 
 func (h *taskHandle) Signal(sig string) error {
-
 	pid, errpid := strconv.Atoi(h.Info.Pid)
 	if errpid != nil {
 		return fmt.Errorf("ERROR Firecracker-task-driver Could not parse pid=%s", h.Info.Pid)

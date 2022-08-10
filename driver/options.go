@@ -60,6 +60,7 @@ type options struct {
 	FcBinary           string   `long:"firecracker-binary" description:"Path to firecracker binary"`
 	FcKernelImage      string   `long:"kernel" description:"Path to the kernel image" default:"./vmlinux"`
 	FcKernelCmdLine    string   `long:"kernel-opts" description:"Kernel commandline" default:"ro console=ttyS0 noapic reboot=k panic=1 pci=off nomodules"`
+	FcInitrd           string   `long:"initrd-path" description:"Path to initrd"`
 	FcRootDrivePath    string   `long:"root-drive" description:"Path to root disk image"`
 	FcRootPartUUID     string   `long:"root-partition" description:"Root partition UUID"`
 	FcAdditionalDrives []string `long:"add-drive" description:"Path to additional drive, suffixed with :ro or :rw, can be specified multiple times"`
@@ -78,6 +79,17 @@ type options struct {
 	FcSocketPath       string   `long:"socket-path" short:"s" description:"path to use for firecracker socket, defaults to a unique file in in the first existing directory from {$HOME, $TMPDIR, or /tmp}"`
 	Debug              bool     `long:"debug" short:"d" description:"Enable debug output"`
 	Version            bool     `long:"version" description:"Outputs the version of the application"`
+
+	Id           string `long:"id" description:"Jailer VMM id"`
+	ExecFile     string `long:"exec-file" description:"Jailer executable"`
+	JailerBinary string `long:"jailer" description:"Jailer binary"`
+
+	Uid      int `long:"uid" description:"Jailer uid for dropping privileges"`
+	Gid      int `long:"gid" description:"Jailer gid for dropping privileges"`
+	NumaNode int `long:"node" description:"Jailer numa node"`
+
+	ChrootBaseDir string `long:"chroot-base-dir" description:"Jailer chroot base directory"`
+	Daemonize     bool   `long:"daemonize" description:"Run jailer as daemon"`
 
 	closers       []func() error
 	validMetadata interface{}
@@ -117,11 +129,34 @@ func (opts *options) getFirecrackerConfig(AllocId string) (firecracker.Config, e
 		return firecracker.Config{}, err
 	}
 
-	var socketPath string
-	if opts.FcSocketPath != "" {
-		socketPath = opts.FcSocketPath
+	var (
+		socketPath string
+		jail       *firecracker.JailerConfig
+	)
+
+	if opts.JailerBinary != "" {
+		jail = &firecracker.JailerConfig{
+			GID:            firecracker.Int(opts.Gid),
+			UID:            firecracker.Int(opts.Uid),
+			ID:             opts.Id,
+			NumaNode:       firecracker.Int(opts.NumaNode),
+			ExecFile:       opts.ExecFile,
+			JailerBinary:   opts.JailerBinary,
+			ChrootBaseDir:  opts.ChrootBaseDir,
+			Daemonize:      opts.Daemonize,
+			ChrootStrategy: firecracker.NewNaiveChrootStrategy(opts.FcKernelImage),
+			Stdout:         os.Stdout,
+			Stderr:         os.Stderr,
+			Stdin:          os.Stdin,
+		}
 	} else {
-		socketPath = getSocketPath()
+		// if no jail is active, either use the path from the arguments
+		if opts.FcSocketPath != "" {
+			socketPath = opts.FcSocketPath
+		} else {
+			// or generate a default socket path
+			socketPath = getSocketPath()
+		}
 	}
 
 	htEnabled := opts.FcDisableSmt
@@ -134,6 +169,7 @@ func (opts *options) getFirecrackerConfig(AllocId string) (firecracker.Config, e
 		FifoLogWriter:     fifo,
 		KernelImagePath:   opts.FcKernelImage,
 		KernelArgs:        opts.FcKernelCmdLine,
+		InitrdPath:        opts.FcInitrd,
 		Drives:            blockDevices,
 		NetworkInterfaces: NICs,
 		VsockDevices:      vsocks,
@@ -143,6 +179,8 @@ func (opts *options) getFirecrackerConfig(AllocId string) (firecracker.Config, e
 			Smt:         firecracker.Bool(htEnabled),
 			MemSizeMib:  firecracker.Int64(opts.FcMemSz),
 		},
+		JailerCfg: jail,
+		VMID:      AllocId,
 	}, nil
 }
 
