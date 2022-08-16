@@ -94,7 +94,7 @@ func taskConfig2FirecrackerOpts(taskConfig TaskConfig, cfg *drivers.TaskConfig) 
 	opts.JailerBinary = taskConfig.JailerBinary
 	opts.Id = cfg.AllocID
 	opts.ExecFile = opts.FcBinary
-	opts.ChrootBaseDir = filepath.Join(cfg.AllocDir, cfg.Name)
+	opts.ChrootBaseDir = "/srv/jailer"
 
 	return opts, nil
 }
